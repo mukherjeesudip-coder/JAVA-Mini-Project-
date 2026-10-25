@@ -46,7 +46,7 @@ The database file `hospital_system.db` is created automatically on first run.
 ```
 
 ## Diagrams
-Draw.io (DFD Level 0, 1, 2 and Use Case Diagram): [add public link]
+Draw.io (DFD Level 0, 1, 2 and Use Case Diagram): (https://drive.google.com/file/d/1JS6fXfndkhKD8LR4teVQX-KH9FCR0WAD/view?usp=sharing)
 
 ## Team
 | Name | Role |
