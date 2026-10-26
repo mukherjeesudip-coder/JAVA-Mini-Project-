@@ -3,6 +3,8 @@ import javax.swing.border.EmptyBorder;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.sql.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -12,7 +14,7 @@ import java.util.List;
 import java.util.Random;
 
 // ==========================================
-// UNIT III: CUSTOM EXCEPTIONS[cite: 1]
+// UNIT III: CUSTOM EXCEPTIONS
 // ==========================================
 class InvalidPatientException extends Exception {
     public InvalidPatientException(String message) { super(message); }
@@ -23,7 +25,7 @@ class AppointmentConflictException extends Exception {
 }
 
 // ==========================================
-// UNIT II: INTERFACE & ABSTRACT ARCHITECTURE[cite: 1]
+// UNIT II: INTERFACE & ABSTRACT ARCHITECTURE
 // ==========================================
 interface Billable {
     double calculateFinalBill(double consultationFee, double taxPercent);
@@ -38,11 +40,14 @@ abstract class Person {
         this.age = age;
     }
 
+    public String getName() { return name; }
+    public int getAge() { return age; }
+
     public abstract void displayDetails();
 }
 
 // ==========================================
-// UNIT I & II: DOMAIN ENTITIES (POJOs)[cite: 1, 2]
+// UNIT I & II: DOMAIN ENTITIES (POJOs)
 // ==========================================
 class Patient extends Person implements Billable {
     private static int idCounter = 1000;
@@ -59,8 +64,6 @@ class Patient extends Person implements Billable {
     }
 
     public int getPatientId() { return patientId; }
-    public String getName() { return name; }
-    public int getAge() { return age; }
     public LocalDate getDateOfBirth() { return dateOfBirth; }
 
     @Override
@@ -98,28 +101,34 @@ class Doctor extends Person {
 }
 
 // ==========================================
-// UNIT III: THREAD SAFETY & MULTITHREADING[cite: 1]
+// UNIT III: THREAD SAFETY & MULTITHREADING
 // ==========================================
 class AppointmentManager {
     private List<LocalDateTime> bookedSlots = new ArrayList<>();
+    private List<String> confirmedBookings = new ArrayList<>();
 
-    public synchronized boolean bookAppointment(Patient patient, LocalDateTime slot) throws AppointmentConflictException {
+    public synchronized boolean bookAppointment(Patient patient, Doctor doctor, LocalDateTime slot) throws AppointmentConflictException {
         if (bookedSlots.contains(slot)) {
             throw new AppointmentConflictException("Slot " + slot.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + " is already booked!");
         }
         bookedSlots.add(slot);
+        confirmedBookings.add(patient.getPatientId() + "-" + doctor.getDoctorId());
         return true;
+    }
+
+    public boolean hasAppointment(int patientId, int doctorId) {
+        return confirmedBookings.contains(patientId + "-" + doctorId);
     }
 }
 
 class BillingTask implements Runnable {
     private Patient patient;
-    private double fee;
+    private Doctor doctor;
     private javax.swing.JTextArea logArea;
 
-    public BillingTask(Patient patient, double fee, javax.swing.JTextArea logArea) {
+    public BillingTask(Patient patient, Doctor doctor, javax.swing.JTextArea logArea) {
         this.patient = patient;
-        this.fee = fee;
+        this.doctor = doctor;
         this.logArea = logArea;
     }
 
@@ -127,18 +136,18 @@ class BillingTask implements Runnable {
     public void run() {
         logArea.append("\n[Billing Thread] Processing background invoice for Patient ID: " + patient.getPatientId() + "...");
         try {
-            Thread.sleep(800);
+            Thread.sleep(600);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        double total = patient.calculateFinalBill(fee, 18.0);
-        Double finalAmountWrapper = Double.valueOf(total); // Autoboxing[cite: 1]
-        logArea.append("\n[Billing Complete] Patient: " + patient.getName() + " | Final Invoiced Amount: $" + finalAmountWrapper + "\n");
+        double total = patient.calculateFinalBill(doctor.getConsultationFee(), 18.0);
+        Double finalAmountWrapper = Double.valueOf(total);
+        logArea.append("\n[Billing Complete] Patient: " + patient.getName() + " | Doctor: " + doctor.getName() + " | Final Invoiced Amount: $" + String.format("%.2f", finalAmountWrapper) + "\n");
     }
 }
 
 // ==========================================
-// DATABASE PERSISTENCE LAYER (JDBC)[cite: 2]
+// DATABASE PERSISTENCE LAYER (JDBC)
 // ==========================================
 class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:hospital_system.db";
@@ -160,13 +169,15 @@ class DatabaseManager {
                     "fee DECIMAL(10,2))");
 
             stmt.execute("CREATE TABLE IF NOT EXISTS APPOINTMENTS (" +
-                    "appointment_id INT PRIMARY KEY, " +
+                    "appointment_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                     "appointment_time TEXT NOT NULL, " +
-                    "patient_id INT)");
+                    "patient_id INT, " +
+                    "doctor_id INT)");
 
             stmt.execute("CREATE TABLE IF NOT EXISTS BILLING (" +
-                    "bill_id INT PRIMARY KEY, " +
+                    "bill_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                     "patient_id INT, " +
+                    "doctor_id INT, " +
                     "total_amount DECIMAL(10,2) DEFAULT 0.00)");
 
             System.out.println("Hospital Management Database Tables Initialized Successfully.");
@@ -194,12 +205,38 @@ class DatabaseManager {
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(query)) {
             pstmt.setInt(1, d.getDoctorId());
-            pstmt.setString(2, d.name);
+            pstmt.setString(2, d.getName());
             pstmt.setString(3, d.getSpecialization());
             pstmt.setDouble(4, d.getConsultationFee());
             pstmt.executeUpdate();
         } catch (SQLException e) {
             System.err.println("Database Error (Doctor Save): " + e.getMessage());
+        }
+    }
+    
+    public static void saveAppointment(String time, int patientId, int doctorId) {
+        String query = "INSERT INTO APPOINTMENTS(appointment_time, patient_id, doctor_id) VALUES(?, ?, ?)";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setString(1, time);
+            pstmt.setInt(2, patientId);
+            pstmt.setInt(3, doctorId);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("Database Error (Appointment Save): " + e.getMessage());
+        }
+    }
+
+    public static void saveBillingRecord(int patientId, int doctorId, double amount) {
+        String query = "INSERT INTO BILLING(patient_id, doctor_id, total_amount) VALUES(?, ?, ?)";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setInt(1, patientId);
+            pstmt.setInt(2, doctorId);
+            pstmt.setDouble(3, amount);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("Database Error (Billing Save): " + e.getMessage());
         }
     }
 }
@@ -218,24 +255,23 @@ class HospitalManagementGUI extends JFrame {
     private JTextField pNameField, pAgeField, dNameField, dSpecField, dFeeField;
     private JTable patientTable, doctorTable, appointmentTable;
     private DefaultTableModel patientTableModel, doctorTableModel, appointmentTableModel;
-    private JComboBox<String> patientCombo, doctorCombo;
+    private JComboBox<String> patientCombo, doctorCombo, billPatientCombo, billDoctorCombo;
     private JTextArea logArea;
 
     // Modern Color Palette
-    private final Color PRIMARY_COLOR = new Color(15, 23, 42);   // Slate Dark (Header / Theme)
-    private final Color ACCENT_COLOR = new Color(14, 165, 233);  // Vivid Cyan / Blue
+    private final Color PRIMARY_COLOR = new Color(15, 23, 42);   // Slate Dark
+    private final Color ACCENT_COLOR = new Color(2, 132, 199);   // High-Visibility Vivid Blue
     private final Color BG_LIGHT = new Color(248, 250, 252);     // Off-white Background
     private final Color CARD_BG = Color.WHITE;                   // Card Background
 
     public HospitalManagementGUI() {
         setTitle("Enterprise Smart Healthcare & Patient Management System");
-        setSize(1050, 700);
+        setSize(1100, 720);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
-        // Apply System Look and Feel for Native Integration
         try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
         } catch (Exception ignored) {}
 
         DatabaseManager.initializeDatabase();
@@ -244,11 +280,9 @@ class HospitalManagementGUI extends JFrame {
         doctorList.add(defaultDoc);
         DatabaseManager.saveDoctor(defaultDoc);
 
-        // Main Layout Container with Header Banner
         setLayout(new BorderLayout());
         add(createHeaderPanel(), BorderLayout.NORTH);
 
-        // Custom Styled Tabbed Pane
         tabbedPane = new JTabbedPane();
         tabbedPane.setFont(new Font("Segoe UI", Font.BOLD, 13));
         tabbedPane.setBackground(BG_LIGHT);
@@ -270,7 +304,7 @@ class HospitalManagementGUI extends JFrame {
         titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 20));
         titleLabel.setForeground(Color.WHITE);
 
-        JLabel subtitleLabel = new JLabel("Object-Oriented & Thread-Safe Hospital Administration Suite[cite: 1, 2]");
+        JLabel subtitleLabel = new JLabel("Object-Oriented & Thread-Safe Hospital Administration Suite");
         subtitleLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         subtitleLabel.setForeground(new Color(148, 163, 184));
 
@@ -284,8 +318,13 @@ class HospitalManagementGUI extends JFrame {
         btn.setFont(new Font("Segoe UI", Font.BOLD, 13));
         btn.setBackground(ACCENT_COLOR);
         btn.setForeground(Color.WHITE);
+        btn.setOpaque(true);
+        btn.setContentAreaFilled(true);
         btn.setFocusPainted(false);
-        btn.setBorder(new EmptyBorder(8, 15, 8, 15));
+        btn.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(3, 105, 161), 2),
+            new EmptyBorder(8, 15, 8, 15)
+        ));
         btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
         return btn;
     }
@@ -341,8 +380,20 @@ class HospitalManagementGUI extends JFrame {
 
         regBtn.addActionListener(e -> {
             try {
-                String name = pNameField.getText();
+                String name = pNameField.getText().trim();
+                if (name.isEmpty()) {
+                    JOptionPane.showMessageDialog(this, "Patient name cannot be empty!", "Validation Error", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
                 int age = Integer.parseInt(pAgeField.getText());
+
+                // Prevent Duplicate Patient Registration
+                boolean alreadyExists = patientList.stream()
+                        .anyMatch(p -> p.getName().equalsIgnoreCase(name) && p.getAge() == age);
+                if (alreadyExists) {
+                    JOptionPane.showMessageDialog(this, "A patient with the name '" + name + "' and age " + age + " is already registered!", "Duplicate Patient Error", JOptionPane.WARNING_MESSAGE);
+                    return;
+                }
                 
                 int birthYear = LocalDate.now().getYear() - age;
                 Random random = new Random();
@@ -403,21 +454,33 @@ class HospitalManagementGUI extends JFrame {
         panel.add(form, BorderLayout.WEST);
 
         doctorTableModel = new DefaultTableModel(new String[]{"Doc ID", "Name", "Specialization", "Fee ($)"}, 0);
-        doctorTableModel.addRow(new Object[]{defaultDoc.getDoctorId(), defaultDoc.name, defaultDoc.getSpecialization(), defaultDoc.getConsultationFee()});
+        doctorTableModel.addRow(new Object[]{defaultDoc.getDoctorId(), defaultDoc.getName(), defaultDoc.getSpecialization(), defaultDoc.getConsultationFee()});
         doctorTable = new JTable(doctorTableModel);
         styleTable(doctorTable);
         panel.add(new JScrollPane(doctorTable), BorderLayout.CENTER);
 
         addDocBtn.addActionListener(e -> {
             try {
-                String name = dNameField.getText();
-                String spec = dSpecField.getText();
+                String name = dNameField.getText().trim();
+                String spec = dSpecField.getText().trim();
+                if (name.isEmpty() || spec.isEmpty()) {
+                    JOptionPane.showMessageDialog(this, "Name and Specialization cannot be empty!", "Error", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
                 double fee = Double.parseDouble(dFeeField.getText());
-                Doctor d = new Doctor(name, 40, spec, fee);
 
+                // Prevent Duplicate Doctor Registration
+                boolean docExists = doctorList.stream()
+                        .anyMatch(d -> d.getName().equalsIgnoreCase(name) && d.getSpecialization().equalsIgnoreCase(spec));
+                if (docExists) {
+                    JOptionPane.showMessageDialog(this, "Doctor '" + name + "' with specialization '" + spec + "' is already registered!", "Duplicate Doctor Error", JOptionPane.WARNING_MESSAGE);
+                    return;
+                }
+
+                Doctor d = new Doctor(name, 40, spec, fee);
                 doctorList.add(d);
                 DatabaseManager.saveDoctor(d);
-                doctorTableModel.addRow(new Object[]{d.getDoctorId(), d.name, d.getSpecialization(), d.getConsultationFee()});
+                doctorTableModel.addRow(new Object[]{d.getDoctorId(), d.getName(), d.getSpecialization(), d.getConsultationFee()});
                 refreshDropdowns();
                 
                 JOptionPane.showMessageDialog(this, "Doctor Profile Added Successfully!");
@@ -440,7 +503,7 @@ class HospitalManagementGUI extends JFrame {
         form.setBackground(CARD_BG);
         form.setBorder(BorderFactory.createTitledBorder(
             BorderFactory.createLineBorder(new Color(203, 213, 225)), 
-            " Schedule Slot (Synchronized)[cite: 1] ", 0, 0, new Font("Segoe UI", Font.BOLD, 12), PRIMARY_COLOR
+            " Schedule Slot (Synchronized) ", 0, 0, new Font("Segoe UI", Font.BOLD, 12), PRIMARY_COLOR
         ));
 
         GridBagConstraints gbc = new GridBagConstraints();
@@ -455,7 +518,7 @@ class HospitalManagementGUI extends JFrame {
         gbc.gridx = 0; gbc.gridy = 1;
         form.add(new JLabel("Select Doctor:"), gbc);
         gbc.gridx = 1; doctorCombo = new JComboBox<>();
-        doctorCombo.addItem("Dr. Sarah Smith (Cardiology)");
+        doctorCombo.addItem("Dr. Sarah Smith (Cardiology) - Fee: $150.0");
         form.add(doctorCombo, gbc);
 
         gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2;
@@ -470,17 +533,23 @@ class HospitalManagementGUI extends JFrame {
         panel.add(new JScrollPane(appointmentTable), BorderLayout.CENTER);
 
         bookBtn.addActionListener(e -> {
-            if (patientList.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Please register a patient first!", "Warning", JOptionPane.WARNING_MESSAGE);
+            if (patientList.isEmpty() || doctorList.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Please register at least one patient and doctor first!", "Warning", JOptionPane.WARNING_MESSAGE);
                 return;
             }
             try {
-                int selectedIndex = patientCombo.getSelectedIndex();
-                Patient p = patientList.get(selectedIndex);
+                int patientIndex = patientCombo.getSelectedIndex();
+                int doctorIndex = doctorCombo.getSelectedIndex();
+                
+                if (patientIndex < 0 || doctorIndex < 0) return;
+
+                Patient p = patientList.get(patientIndex);
+                Doctor d = doctorList.get(doctorIndex);
                 LocalDateTime slot = LocalDateTime.now().plusDays(1).withHour(10).withMinute(0);
 
-                if (appointmentManager.bookAppointment(p, slot)) {
-                    appointmentTableModel.addRow(new Object[]{p.getName(), "Dr. Sarah Smith", slot.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))});
+                if (appointmentManager.bookAppointment(p, d, slot)) {
+                    DatabaseManager.saveAppointment(slot.toString(), p.getPatientId(), d.getDoctorId());
+                    appointmentTableModel.addRow(new Object[]{p.getName(), d.getName(), slot.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))});
                     JOptionPane.showMessageDialog(this, "Appointment successfully locked and confirmed!");
                 }
             } catch (AppointmentConflictException ex) {
@@ -491,24 +560,51 @@ class HospitalManagementGUI extends JFrame {
         return panel;
     }
 
-    // --- TAB 4: BILLING & ASYNCHRONOUS MULTITHREADING ---
+    // --- TAB 4: BILLING & ASYNCHRONOUS MULTITHREADING + FILE EXPORT ---
     private JPanel createBillingPanel() {
         JPanel panel = new JPanel(new BorderLayout(15, 15));
         panel.setBackground(BG_LIGHT);
         panel.setBorder(new EmptyBorder(20, 20, 20, 20));
 
-        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        topPanel.setBackground(BG_LIGHT);
-        JButton generateBillBtn = createStyledButton("Process Asynchronous Invoice & Tax Calculation[cite: 1]");
-        topPanel.add(generateBillBtn);
-        panel.add(topPanel, BorderLayout.NORTH);
+        JPanel controlPanel = new JPanel(new GridBagLayout());
+        controlPanel.setBackground(CARD_BG);
+        controlPanel.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(new Color(203, 213, 225)), 
+            " Generate Invoice & Bill Export ", 0, 0, new Font("Segoe UI", Font.BOLD, 12), PRIMARY_COLOR
+        ));
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 10, 8, 10);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        gbc.gridx = 0; gbc.gridy = 0;
+        controlPanel.add(new JLabel("Select Patient:"), gbc);
+        gbc.gridx = 1; billPatientCombo = new JComboBox<>();
+        controlPanel.add(billPatientCombo, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1;
+        controlPanel.add(new JLabel("Select Attending Doctor:"), gbc);
+        gbc.gridx = 1; billDoctorCombo = new JComboBox<>();
+        billDoctorCombo.addItem("Dr. Sarah Smith (Cardiology) - Fee: $150.0");
+        controlPanel.add(billDoctorCombo, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2;
+        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        buttonRow.setBackground(CARD_BG);
+        JButton generateBillBtn = createStyledButton("Process Async Invoice");
+        JButton exportPdfBtn = createStyledButton("Export Bill Text File");
+        buttonRow.add(generateBillBtn);
+        buttonRow.add(exportPdfBtn);
+        controlPanel.add(buttonRow, gbc);
+
+        panel.add(controlPanel, BorderLayout.NORTH);
 
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setFont(new Font("Consolas", Font.PLAIN, 13));
         logArea.setBackground(PRIMARY_COLOR);
-        logArea.setForeground(new Color(56, 189, 248)); // Neon blue console font
-        logArea.setText(">>> System Ready. Multithreaded Billing Console Initialized[cite: 1].\n");
+        logArea.setForeground(new Color(56, 189, 248));
+        logArea.setText(">>> System Ready. Multithreaded Billing Console Initialized.\n");
         
         JScrollPane scrollPane = new JScrollPane(logArea);
         scrollPane.setBorder(BorderFactory.createTitledBorder(
@@ -518,15 +614,78 @@ class HospitalManagementGUI extends JFrame {
         panel.add(scrollPane, BorderLayout.CENTER);
 
         generateBillBtn.addActionListener(e -> {
-            if (patientList.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "No active patient records available for billing.", "Notice", JOptionPane.WARNING_MESSAGE);
+            if (patientList.isEmpty() || doctorList.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "No active patient or doctor records available.", "Notice", JOptionPane.WARNING_MESSAGE);
                 return;
             }
-            Patient p = patientList.get(0); 
-            Doctor d = doctorList.get(0);
+            int pIndex = billPatientCombo.getSelectedIndex();
+            int dIndex = billDoctorCombo.getSelectedIndex();
+            if (pIndex < 0 || dIndex < 0) return;
 
-            Thread billingThread = new Thread(new BillingTask(p, d.getConsultationFee(), logArea));
+            Patient p = patientList.get(pIndex);
+            Doctor d = doctorList.get(dIndex);
+
+            if (!appointmentManager.hasAppointment(p.getPatientId(), d.getDoctorId())) {
+                JOptionPane.showMessageDialog(this, 
+                    "Billing Blocked: Patient '" + p.getName() + "' does not have a confirmed appointment with " + d.getName() + "!", 
+                    "Appointment Required", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            Thread billingThread = new Thread(new BillingTask(p, d, logArea));
             billingThread.start();
+        });
+
+        exportPdfBtn.addActionListener(e -> {
+            if (patientList.isEmpty() || doctorList.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "No records to export.", "Warning", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            int pIndex = billPatientCombo.getSelectedIndex();
+            int dIndex = billDoctorCombo.getSelectedIndex();
+            if (pIndex < 0 || dIndex < 0) return;
+
+            Patient p = patientList.get(pIndex);
+            Doctor d = doctorList.get(dIndex);
+            
+            if (!appointmentManager.hasAppointment(p.getPatientId(), d.getDoctorId())) {
+                JOptionPane.showMessageDialog(this, 
+                    "Invoice Export Blocked: Patient '" + p.getName() + "' does not have a confirmed appointment with " + d.getName() + "!", 
+                    "Appointment Required", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            double subtotal = d.getConsultationFee();
+            double tax = subtotal * 0.18;
+            double total = p.calculateFinalBill(subtotal, 18.0);
+
+            String fileName = "Patient_Bill_" + p.getPatientId() + ".txt";
+            try (PrintWriter writer = new PrintWriter(new FileWriter(fileName))) {
+                writer.println("==================================================");
+                writer.println("         SMART HEALTHCARE PORTAL - INVOICE        ");
+                writer.println("==================================================");
+                writer.println("Date & Time  : " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+                writer.println("Patient ID   : " + p.getPatientId());
+                writer.println("Patient Name : " + p.getName());
+                writer.println("Patient Age  : " + p.getAge());
+                writer.println("--------------------------------------------------");
+                writer.println("Attending Dr.: " + d.getName());
+                writer.println("Specialization: " + d.getSpecialization());
+                writer.println("Consultation : $" + String.format("%.2f", subtotal));
+                writer.println("Tax (18%)    : $" + String.format("%.2f", tax));
+                writer.println("--------------------------------------------------");
+                writer.println("TOTAL AMOUNT : $" + String.format("%.2f", total));
+                writer.println("==================================================");
+                writer.println("        Thank you for choosing our hospital!      ");
+                writer.println("==================================================");
+                
+                DatabaseManager.saveBillingRecord(p.getPatientId(), d.getDoctorId(), total);
+                
+                logArea.append("\n[File Export Success] Bill invoice saved to: " + new java.io.File(fileName).getAbsolutePath() + "\n");
+                JOptionPane.showMessageDialog(this, "Bill successfully exported as a text invoice file:\n" + fileName, "Export Complete", JOptionPane.INFORMATION_MESSAGE);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "File Export Error: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
         });
 
         return panel;
@@ -534,8 +693,19 @@ class HospitalManagementGUI extends JFrame {
 
     private void refreshDropdowns() {
         patientCombo.removeAllItems();
+        billPatientCombo.removeAllItems();
         for (Patient p : patientList) {
-            patientCombo.addItem(p.getName() + " (ID: " + p.getPatientId() + ")");
+            String display = p.getName() + " (ID: " + p.getPatientId() + ")";
+            patientCombo.addItem(display);
+            billPatientCombo.addItem(display);
+        }
+
+        doctorCombo.removeAllItems();
+        billDoctorCombo.removeAllItems();
+        for (Doctor d : doctorList) {
+            String display = "Dr. " + d.getName() + " (" + d.getSpecialization() + ") - Fee: $" + d.getConsultationFee();
+            doctorCombo.addItem(display);
+            billDoctorCombo.addItem(display);
         }
     }
 }
